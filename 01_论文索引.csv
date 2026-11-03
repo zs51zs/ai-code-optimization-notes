@@ -1,0 +1,17 @@
+﻿ID,类别,名称,年份,发表/性质,论文网址,代码仓库,优先级,阅读状态,关注点
+A01,A,SWE-Perf,2026,ICML 2026,https://arxiv.org/abs/2507.12415,https://github.com/SWE-Perf/SWE-Perf,A,L2,Benchmark / Apply Correctness Performance
+A02,A,SWE-fficiency,2026,ICML 2026,https://proceedings.mlr.press/v306/ma26l.html,https://github.com/swefficiency/swefficiency,A,L0,Real workload performance evaluation
+A03,A,FormulaCode,2026,arXiv 2026; venue待核查,https://arxiv.org/abs/2603.16011,https://github.com/formula-code/fc-eval,B,L0,Large codebase multiobjective benchmark
+B01,B,PerfAgent,2026,arXiv preprint,https://arxiv.org/abs/2607.19653,,A,L1+,Profiler + validation loop; official code未核验
+B02,B,Codeflash,2026,开源工程项目,https://github.com/codeflash-ai/codeflash,https://github.com/codeflash-ai/codeflash,B,L0,Python automated optimization product
+C01,C,AlphaEvolve,2025,arXiv / research report,https://arxiv.org/abs/2506.13131,https://github.com/google-deepmind/alphaevolve_repository_of_problems,A,L1,problem repo NOT core runner
+C02,C,ShinkaEvolve,2026,ICLR 2026,https://arxiv.org/abs/2509.19349,https://github.com/SakanaAI/ShinkaEvolve,A,L1+,Evolution / sample efficiency
+C03,C,OpenEvolve,2025,开源工程项目,https://github.com/algorithmicsuperintelligence/openevolve,https://github.com/algorithmicsuperintelligence/openevolve,B,L0,AlphaEvolve-inspired independent implementation
+C04,C,FunSearch,2023,Nature,https://doi.org/10.1038/s41586-023-06924-6,https://github.com/google-deepmind/funsearch,B,L0,LLM program search with evaluator
+D01,D,OpenHands Software Agent SDK,2025,arXiv preprint,https://arxiv.org/abs/2511.03690,https://github.com/OpenHands/software-agent-sdk,A,L1,"Agent foundation, workspaces, tools"
+D02,D,mini-swe-agent,2025,开源工程项目,https://github.com/SWE-agent/mini-swe-agent,https://github.com/SWE-agent/mini-swe-agent,B,L0,Minimal agent loop
+D03,D,SWE-agent,2024,arXiv,https://arxiv.org/abs/2405.15793,https://github.com/SWE-agent/SWE-agent,B,L0,"Tool interface, SWE automation"
+E01,E,KernelBench,2025,arXiv,https://arxiv.org/abs/2502.10517,https://github.com/ScalingIntelligence/KernelBench,B,L0,GPU kernel correctness & performance
+E02,E,PIE,2024,文献元数据待核查,https://arxiv.org/abs/2302.07867,https://github.com/LearningOpt/pie,B,L0,Performance-improving code examples
+F01,F,GPTune,2021,ACM HPC research,https://doi.org/10.1145/3437801.3441621,https://github.com/gptune/GPTune,C,L0,HPC auto tuning expansion
+F02,F,Caliper,2026,开源工程项目,https://software.llnl.gov/Caliper/,https://github.com/LLNL/Caliper,C,L0,Program instrumentation for HPC
