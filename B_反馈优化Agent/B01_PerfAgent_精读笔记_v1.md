@@ -1,4 +1,4 @@
-# B01 · PerfAgent 论文精读（第一次）
+# B01 · PerfAgent 论文精读（持续更新）
 
 - 题名：PerfAgent: Profiler-Guided Iterative Refinement for Repository-Level Code Optimization
 - 作者：Ryan Deng 等
@@ -6,7 +6,8 @@
 - 论文 HTML：https://arxiv.org/html/2607.19653
 - 论文 PDF：https://arxiv.org/pdf/2607.19653
 - 关联实验材料（需自行核对内容完整性）：https://zenodo.org/records/22921624
-- 本次阅读范围：§I–III 全文；§IV 重点表 II–IV、VI–VII、案例；§VI 局限
+- 阅读范围：第一轮 §I–III、§IV 关键实验；第二轮精读 Fig.2、Fig.3、§III-B/C、§IV-D2
+- 最近更新：2026-11-05（在原笔记中追加第二轮，不另立孤立论文）
 - 阅读等级：L2 深入方法和论文数据；尚未在本地复现/逐行检查作者源代码
 - 研究主线：通用 AI Agent 自动代码性能优化；ParaLedger 只是未来应用验证场景
 
@@ -174,3 +175,155 @@ hotspots:
 - 核查 Zenodo 工件结构、作者是否正式释放完整运行代码；不要混用另一个名称相似的 eBPF perf-agent 仓库。
 - 精读 GSO / SWE-fficiency-Lite 的测评脚本，明确怎样判定缓存投机行为。
 
+
+
+---
+
+# 第二次精读补充（2026-11-05）：Fig. 2 + Fig. 3 如何从性能证据走向代码优化
+
+> 学术资料状态：依据 [arXiv:2607.19653v1 HTML](https://arxiv.org/html/2607.19653) 与 [PDF](https://arxiv.org/pdf/2607.19653) 核对；已阅读论文图示，但**没有**运行作者原始 PerfAgent，也没有复现实验。工程代码片段均是教学或本项目设计示例。
+
+## A. Figure 2：采样器如何处理证据
+
+### A1. 这张图的示例是什么
+
+图 2 是 **NumPy 的 `np.char.add`** 性能证据处理示例，不等于 Fig. 3 的 `numpy.char.replace` 五轮迭代案例。
+
+图中输入为 py-spy 原始调用栈，列出 `workload`、`add`、`_vec_string_with_args`、`PyArray_Scalar` 等栈帧，原始样本约 **1,039** 个；聚合图中 `workload` 对应 **99.8%** 采样占比。图中还显示 `_vec_string_with_args` 的 **57.2%** 和 `PyArray_Scalar` 的 **38.7%**。这些是**采样与调用路径关联的统计比例**，不能把父子函数的 inclusive 百分比简单加和，也不等于对某函数做了精确的毫秒计时。
+
+### A2. 六个步骤
+
+1. **固定待分析工作负载**：作者将目标 workload 重复执行约 10 秒，防止一次操作太短无法采够样本。这样设计也可能改变缓存/预热行为，需要同独立 Benchmark 计时分离。
+2. **采样**：`py-spy` 约 100 Hz 观察 Python 进程的调用栈。10 秒大约 1,000 个采样点，但实际数量与过滤后的样本数不一定正好是 1,000。
+3. **过滤**：剔除初始化、数据加载等与目标运算不相关的样本；过滤规则必须保存，避免不恰当地掩盖真实开销。
+4. **解析与聚合**：汇总调用路径、代码文件/函数/行号、样本占比、是否属于仓库外部依赖。保留原始证据以便追溯。
+5. **同时提供 Self 和 Inclusive/Total**：Self 表示栈顶对应函数自身的采样开销；Total 表示调用路径中包含该函数的累计采样开销。采样估计存在偏差，不能当精确墙钟耗时。
+6. **独立 LLM 摘要步骤**：把结构化信息压缩为可读文本，然后交给负责修改代码的 Coding Agent；原始统计值必须与解释性推断分开。
+
+### A3. 为什么提供两种耗时
+
+示例：`process()` 累计占 80 ms（示意），其中自身逻辑 10 ms，子调用 `calculate()` 70 ms。仅看到 80 ms 就修改 `process()` 的少量 Python 代码，可能找错真正的改动点；需要看调用链和 Self/Total 分布。注意这里用的“ms”是示意，用于理解定义，不是论文给出的精确样本时间。
+
+### A4. py-spy 工具练习（不是论文实际运行命令）
+
+官方：https://github.com/benfred/py-spy
+
+```bash
+pip install py-spy
+# 先使用一个安全、可控的 Python demo；原生扩展需支持该平台和符号信息
+py-spy record --rate 100 --native --format raw -o profile.raw -- python workload.py
+# 或者生成 flamegraph 可视化
+py-spy record --rate 100 --native -o profile.svg -- python workload.py
+```
+
+- `--native`：在支持的平台上尝试捕获 C/C++ 等原生帧；需要适当符号信息才能良好定位；**不保证能分析任何 C++/RDMA 程序**。
+- `--rate 100`：请求每秒约 100 次采样，并非每个函数每秒调用 100 次。
+- `record` 的输出便于检查调用路径；若遇到权限或符号限制，应记录原样失败，而非要求随意提权。
+- 仓库专用的 C++ 路线应该另研究 Linux `perf`、HPCToolkit 或专门插桩。
+
+### A5. Agent 可理解的证据格式（我方建议，非作者接口）
+
+```json
+{
+  "workload_id": "char_add_demo",
+  "profiler": "py-spy",
+  "sample_count": 1039,
+  "hotspots": [
+    {
+      "symbol": "PyArray_Scalar",
+      "source": "scalarapi.c:599",
+      "language": "C",
+      "call_path": ["np.char.add", "_vec_string_with_args", "PyArray_Scalar"],
+      "sample_share": 0.387,
+      "editable_in_repo": false,
+      "hypothesis": "可能存在逐元素标量装箱开销"
+    }
+  ],
+  "interpretation_status": "hypothesis_not_verified"
+}
+```
+
+此示例结合论文图 2 里的数字展示可能的数据形态。`editable_in_repo` 取值取决于代码仓库实际所有权，不能只根据符号名称推断；`hypothesis` 是待检验解释，不能当 Profiler 已证明的因果结论。
+
+## B. Figure 3：五轮 `numpy.char.replace` 优化的真正含义
+
+案例 ID：`numpy__numpy-1b861a2`，GPT-5.1，GSO。**所有加速比均对比同一原始基线**，不是每轮在上一轮基础上再乘一次。
+
+| 轮次 | 新 Profiler 证据/决策 | Agent 修改 | 对原始版的加速比 | 是否保留 |
+|---|---|---|---:|---|
+| 1 | `replace/_vec_string` 通用分发占 67% total，存在标量创建和引用计数开销 | 针对标量参数增加 C 快速路径 `_vec_string_scalar_args` | 1.40× | 候选 |
+| 2 | `_to_bytes_or_str_array` 占 29% total，标量参数处理约 18% self | 在 Python `np.char.replace` 中绕过数组转换 | 2.36× | 候选 |
+| 3 | `PyArray_Scalar` 和对象创建的逐元素开销依然存在（图中标注 29%+12% self） | 编写 C 专用内核 `chararray_replace`、`_unicode_do_replace` | 5.56× | 候选 |
+| 4 | `_unicode_string_length` 约 11% self：每元素重复长度扫描 | 在 C 内核中删除冗余扫描 | **5.87×** | **最佳** |
+| 5 | 热点接近内存/库函数开销，`libc` 约 22% self | 再尝试局部调整 | 5.85× | 退化，丢弃 |
+
+解读：
+
+1. 第一、二轮主要减少现有通路中的绕路操作，但并未根除对象创建开销。
+2. 第三轮发生**抽象层跨越**：从 Python 调度/包装层深入自定义 C 内核，才产生主要加速收益。
+3. 第四轮通过**重新采样**发现新的细节瓶颈，去掉多余字符串长度扫描。
+4. 第五轮虽然测试通过但性能稍退化，控制器选择第四轮；如果仅保留“最后一次补丁”，就可能得到更差的结果。
+5. 这里的 C 内核是**Agent 在本案例中提出的修改**，不是我们已独立验证过的最佳实现。
+
+### B1. 加速比与改善率不要混用
+
+加速比 `S = T_baseline / T_patch`。例如 5.87× 意味着同一测试配置下 `T_patch = T_baseline / 5.87`。**不是“运行时间减少 587%”**。比较不同轮时请保持基准版本、输入和测量规则一致。
+
+### B2. 与 Figure 4 的区别
+
+Fig. 3 仅是**一个具体 NumPy 案例**；Fig. 4 汇总许多任务的每轮趋势。Fig. 4 作者指出 SWE-fficiency-Lite 的后几轮可观察样本显著减少，多数任务先耗尽预算，不能把图 4 后几轮的点当作完整任务集上的不受偏倚平均。
+
+## C. 由图 2 + 图 3 得到的完整工程闭环
+
+```text
+Base repository + workload
+    │
+    ├─[采样器]→ 原始证据 → 过滤/聚合 → 结构化热点
+    │                                      │
+    │                                [LLM 摘要]
+    │                                      ▼
+    └───────────────────────────────── Agent 生成 Patch
+                                            │
+                                           ▼
+                                        编译/测试
+                            ┌──────────────┴──────────────┐
+                          失败                           通过
+                            │                              │
+                       返回错误                        Benchmark
+                                                           │
+                                                记录候选/统计收益
+                                                           │
+                                              重新 Profiler 新版本
+                                                           │
+                                                  下一轮或预算到期
+                                                           │
+                                            保存最佳“正确”候选
+```
+
+**实现原则：** 测量模块不应被模型改写；记录代码版本、Patch 哈希、workload、测量证据、验证结果和实验预算。`LLM` 的角色是提出假设与 Patch；是否接受 Patch 由确定性门禁与独立实验结果决定。
+
+## D. 性能优化不能等价于 Benchmark 投机
+
+论文 §IV-E4 报告：循环式 Agent 可能通过在第一次运行后缓存结果，让重复执行的基准测量看上去很快，而非优化程序真实执行效率。作者因此改用首轮计时等措施减少此类问题，论文也采用 hack detector。对于自己的系统，建议保留独立工作负载、跨输入验证与冷/热启动结果，不能仅依赖一个脚本的平均计时。
+
+## E. 本次读完后应该能回答的问题
+
+1. 为什么 `py-spy` 的原始采样不直接输入 Agent？
+2. 为什么一个 Self Time 低而 Total Time 高的函数不一定适合局部重写？
+3. 第三轮为什么是“跨抽象层”的优化，而不仅是继续微调 Python？
+4. 为什么第五轮正确通过但没有成为最终补丁？
+5. 为什么只向 Agent 提示“请使用 Profiler”不等于自动整理证据的系统？（详见 Table VII：GSO 上提示基线的 Hack-Adj 16.7%，完整 PerfAgent 为 39.2%。）
+
+## F. 后续待做（严格区分事实和假设）
+
+- 阅读公开实验工件是否包含本 NumPy 案例的完整轨迹和 Patch；当前仅确认 Zenodo 工件描述：https://zenodo.org/records/22921624。
+- 在一个可控 Python 样例上采集 raw stack，与系统生成的结构化热点摘要对应。
+- 设计对照：无 Profiler / 原始日志 / 结构化摘要 / LLM 整理摘要，固定相同 agent、工作负载、预算，比较正确率与加速效果。
+- 后续选择其他真实语言场景扩展，例如单机 C++，然后再到 ParaLedger/RDMA。**不能因为 Py-spy 在 Python native 扩展有效，就推断对多节点通信问题也一定有效。**
+
+## 参考依据
+
+- 论文 §III-B（Fig. 2）：https://arxiv.org/html/2607.19653
+- 论文 §III-C、§IV-D2（Fig. 3、Fig. 4）：https://arxiv.org/pdf/2607.19653
+- 工具官方说明：https://github.com/benfred/py-spy
+- 作者提供的实验工件说明：https://zenodo.org/records/22921624

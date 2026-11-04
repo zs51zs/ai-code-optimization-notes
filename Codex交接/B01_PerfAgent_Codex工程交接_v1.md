@@ -36,3 +36,27 @@
 ## 注意
 
 论文作者在 §VI 明确：pytest-testmon 的覆盖主要针对 Python，对 native C/C++ 修改可能出现测试盲区。因此不要直接把此工具当成跨语言正确性保证。论文在 Mini-SWE-Agent 上验证，不得称其已经证明对我们的 Codex 现有版本同样有效。
+
+
+---
+
+## 2026-11-05 新增：Figure 2 / Figure 3 的专项工程核对
+
+### 仅审查与小型技术验证，不直接重构核心系统
+
+1. **证据处理**：审查是否保存原始 profile，是否把 setup 采样排除规则、样本总数、Self/Inclusive、调用栈和仓库/外部依赖标记记录为结构化格式。
+2. **py-spy 适配器**：如果本地有可用 Python workload，在可控环境中验证 `py-spy` 的 raw/speedscope 采样和 `--native` 能否采集原生扩展帧；无权限或不支持时记录失败，不要通过修改系统安全配置强行启用。
+3. **统一证据模型**：提出 `ProfileEvidence`（原始可追溯）和 `BottleneckHypothesis`（模型推断）两种不同类型；禁止把“样本占比”描述成“因果瓶颈已证实”。
+4. **重新采样**：确认每轮优化之后是否针对新版本真正 re-profile，而不是复制初始摘要；正确性失败不得被标为最优。
+5. **最佳补丁**：用模拟候选 1.40×、2.36×、5.56×、5.87×、5.85× 验证只保留第 4 轮。实际性能数据必须来自运行，不得使用论文案例数字充当本项目实测。
+6. **防投机评价**：隔离或冻结 Benchmark harness，检查输入变化、冷启动/热启动、缓存和预计算漏洞；最终性能比较需独立复测。
+7. **语言适配边界**：py-spy 不应作为 C++ standalone 或 RDMA 的统一采样器；预留其他 Profiler adapter 接口即可。ParaLedger 不在首期开发范围内。
+
+### 推荐输出
+
+- `docs/perfagent_fig2_fig3_mapping.md`：现有架构到各步骤的对应关系、缺口、无需改动的能力。
+- `docs/profiler_evidence_schema.md`：采样事实与模型推断分离的 schema、字段定义、示例。
+- `tests/test_best_patch_selector.py`：仅测试确定性的正确性/速度排序逻辑。
+- `docs/validation_protocol.md`：正确性、计时、Profile、最终确认的不同门禁。
+
+首轮仅提出最小修改计划及可执行小型实验，不要以“复刻 PerfAgent”名义大范围重构。详见笔记 `B_反馈优化Agent/B01_PerfAgent_精读笔记_v1.md` 第二次精读补充。
