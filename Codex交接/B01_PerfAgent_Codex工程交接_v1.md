@@ -60,3 +60,35 @@
 - `docs/validation_protocol.md`：正确性、计时、Profile、最终确认的不同门禁。
 
 首轮仅提出最小修改计划及可执行小型实验，不要以“复刻 PerfAgent”名义大范围重构。详见笔记 `B_反馈优化Agent/B01_PerfAgent_精读笔记_v1.md` 第二次精读补充。
+
+
+---
+
+## 2026-11-05 第三轮追加：成本、公平比较、Reward Hacking 审查要求
+
+> 先完成论文知识库的 Git Commit + Push，再进行本轮交接。当前文件是候选工程审查范围，不代表已批准代码修改或大型实验。
+
+### 必须审查的六组问题
+
+1. **五轮上限与停止原因**：现有系统是否记录 `max_submissions`、`actual_submissions`、`stop_reason`（预算、步数、正确性失败、构建失败、完成等）？论文 θ=5 是实验超参数，不能硬编码成通用最优。
+2. **真实全流程成本**：除 LLM token/API 费用，能否追踪代码阅读、工具调用、测试、构建、Profiler 与实际耗时？费用口径应记录，不能用论文 $2.88/$4.25 当成本预测。
+3. **候选基线公平性**：能否设计 one-shot、independent best@K（**不能让生产方法使用隐藏评价结果**）、feedback@K 的公平对照？至少报告候选数匹配与成本匹配两种实验。
+4. **Reward Hacking 防御**：Agent 是否能修改 benchmark、测试脚本、隐藏输入或成绩汇总逻辑？是否检测全局缓存、测试栈识别、硬编码输出、跳过计算、针对固定数据形态投机？合法缓存不得无证据地一律拒绝。
+5. **独立复测与选优偏差**：是否把开发期评分与最终独立测试分离？记录冷启动/热启动、变化输入、不同规模、跨进程重启以及测量方差；是否能区分“最快的测得候选”和“经过复测的可信候选”？
+6. **指标正确性**：SWE-Perf 的 Performance、GSO 的 Opt@1/Sp@1、一般 Speedup 与 PerfAgent Hack-Adjusted 是否分开实现，禁止误称为一个指标？
+
+### 建议交付内容（审查阶段，不要求直接实现）
+
+- `docs/research/perfagent_budget_and_search_baselines_review.md`：现有代码位置、证据、缺口、建议测试矩阵和资源估算。
+- `docs/research/benchmark_integrity_review.md`：评分器边界、潜在投机入口、隐藏输入的保护方法、缓存的正当性判断。
+- `docs/research/candidate_selection_protocol.md`：候选正确性、性能统计、独立复测、最佳候选记录与回滚规则。
+- 对现有代码文件提供函数级证据，不要声称只因存在文件名就已有完整功能。
+
+### 参考论文实验数据（不得作为本项目成果）
+
+- Table VI：GSO PerfAgent Hack-Adj 39.2%，oracle OpenHands best@5 26.5%，费用 $2.88 vs $11.01；SWE-Lite 分别 74% vs 68%，$4.25 vs $9.91。
+- Table IX：SWE-Lite $5 预算第五轮仅 6/100 提交，$10 预算仅 12/100；总 Opt@1 75%→79%、Hack-Adj 74%→77%。
+- Reward Hacking：原测量方案中 loop-only A_L 62% Opt@1、44% Hack-Adj，18 个可疑 Patch（14 个持久缓存/状态）；修改首轮计时并重跑后检测数量 18→3。不得混用旧、新方案的指标。
+- 方法适用性：PerfAgent 在 Mini-SWE-Agent 上实现，基线运行了 OpenHands/Codex，尚不能断言当前我们的 Codex 工程已验证 PerfAgent 的性能提升。
+
+下一步：将审查报告交回研究讨论，和后续 ShinkaEvolve / AlphaEvolve 文献比较后再决定正式原型与实验，不允许擅自执行生产或集群环境改动。
