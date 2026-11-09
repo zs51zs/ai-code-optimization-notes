@@ -1,6 +1,6 @@
 # C02｜ShinkaEvolve 精读笔记 v1：多候选进化搜索与样本效率
 
-> 状态：已完成前两轮精读（§3 Method、§4 结果导读、Figure 5、Figure 9 消融），尚未完成官方源码逐模块核对和实验复现；教学数值均标为示例。
+> 状态：前两轮论文精读 + 第三轮官方源码静态核对（2026-11-09）已完成；**尚未克隆/运行官方仓库，也未在本项目中复现实验**。教学数值均标为示例，论文参数与当前实现参数分开记录。
 
 ## 一、论文信息
 
@@ -270,3 +270,108 @@ Weighted 机制示意：设 `F(P_i)` 为得分，`N(P_i)` 为已有子代数，`
 - 如何证明性能反馈与多分支候选选择之间存在互补增益，而不是单纯因为增加了 API 调用？
 
 **更新状态**：完成 Figure 5、Figure 9 的第二轮方法与消融精读；尚未自己复现作者实验。
+
+
+---
+
+# 第三轮：官方源码静态精读（2026-11-09）
+
+## 阅读边界与版本提醒
+
+此次检查 SakanaAI/ShinkaEvolve `main` 分支的公开源码与官方配置文档，未在本地下载并运行全套依赖，未进行任何评测实验。官方 README 说明 2026 年 3 月统一采用 `ShinkaEvolveRunner`，其后新增功能；本节解释的是检查日期对应的**当前源码**，而前面 §3、Figure 5/9 是**论文实验方法**，两者不能完全等同。
+
+源码索引：
+- 数据库：`shinka/database/dbase.py` https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/database/dbase.py
+- 父代选择：`shinka/database/parents.py` https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/database/parents.py
+- 启发样本：`shinka/database/inspirations.py` https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/database/inspirations.py
+- 多岛管理：`shinka/database/islands.py` https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/database/islands.py
+- 新颖性：`shinka/core/novelty_judge.py` https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/core/novelty_judge.py
+- 异步控制：`shinka/core/async_runner.py` https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/core/async_runner.py
+- 评测辅助：`shinka/core/wrap_eval.py` https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/core/wrap_eval.py
+- 配置文档：https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/configuration.md
+- 安装/示例：https://github.com/SakanaAI/ShinkaEvolve/blob/main/docs/getting_started.md
+
+## 1. Archive（候选记录 + 当前有限容量档案）
+
+SQLite 数据库在 `ProgramDatabase` 的 `programs` 表中持久化：`id`, `code`, `language`, `parent_id`, `archive_inspiration_ids`, `top_k_inspiration_ids`, `generation`, `code_diff`, `combined_score`, `public_metrics`, `private_metrics`, `text_feedback`, `embedding`, `correct`, `children_count`, `island_idx`, `metadata` 等。另有仅维护 `program_id` 的 `archive` 表、`metadata_store`、`generation_event_log` 和 `attempt_log`。可见历史候选记录与当前存档成员分离；它们不是同一张表。
+
+`ProgramDatabase.add()` 写入候选，后续维护步骤调用 `_update_archive()` 和 `_update_best_program()`。源码中的 `_update_archive`：不正确的程序不进入 archive；未满时插入；满后按 `archive_selection_strategy` 决定替换。`fitness` 策略比较得分，`crowding` 策略考虑与现有候选的相似关系。当前常规默认 `archive_size=40`、`archive_selection_strategy='fitness'`、`num_islands=2`；不同 Hydra preset 可覆盖，不能误写为统一固定参数。`children_count` 允许父代采样器衡量一个节点被开发次数。
+
+**我们应借鉴的最小数据模型**（建议，不是官方 API）：
+
+```text
+Candidate { candidate_id, parent_id, task_id, source_commit, patch_path,
+            generation, island_id, status, correct, metric_samples,
+            verified_gain, score, model_id, profile_artifact_path,
+            generation_cost, evaluation_cost, created_at }
+```
+
+候选记录应不可被后续修改覆盖，`best_valid_candidate` 是单独的查询/派生结果；有助于重放实验。被过滤或失败的尝试也应留下至少一条可追溯状态记录，但不应与成功评测候选统计混淆。
+
+## 2. Parent Sampler + Inspiration Sampler
+
+`parents.py` 的 `WeightedSamplingStrategy.sample_parent()` 先从相应 island 的 archive 中选择**正确**程序，避免直接拿失败候选充当父代。当前源码中性能项额外使用 MAD 归一化：
+
+```text
+m = median(score_i)
+d = max(median(|score_i-m|), 1e-6)
+s_i = sigmoid(parent_selection_lambda * (score_i - m) / d)
+h_i = 1 / (1 + children_count_i)
+w_i = s_i * h_i
+p_i = w_i / sum_j w_j
+```
+
+当权重异常或没有符合条件的候选时存在兜底逻辑。MAD 归一化是当前源码与本笔记前半部分“论文简化公式”的区别：前面的例子使用论文简化表达，不能直接视为当前代码的实际输出。另有 `PowerLawSamplingStrategy`、`BeamSearchSamplingStrategy`、`BestOfNSamplingStrategy` 和 `SequentialSamplingStrategy` 可供比较，某些策略可能为实验用途，不必在最小原型中实现。
+
+`inspirations.py` 的 `ArchiveInspirationSelector` 会参考父代、岛屿限制、历史较好程序等选择另外的 inspiration。**Parent 是实际修改的起点；Inspiration 是交给模型参考的历史思路**。不能把它们混成“随机选两个父代”。`dbase.py::sample()` 将“抽 island → 抽 parent → 抽 inspirations”组织为一个返回结果。
+
+## 3. Novelty Judge 与重复过滤
+
+`novelty_judge.py` 的 `NoveltyJudge.should_check_novelty` 需要 embedding、非初代、有效父代，以及岛屿初始化等条件。当前代码在岛屿内部检查余弦相似度；最大相似度不超过阈值时接受；超过阈值时，有配置的 LLM judge 可继续判断语义上是否新颖；没有 LLM 裁判时，高相似度默认拒绝。代码对次数和费用有元数据记录；`async_runner.py` 会在把候选提交给后续 evaluation 前执行这一步，失败可能触发再生成。
+
+**重要版本差异：** 论文早期描述了 `eta=0.95` 一类阈值，但截至本轮检查的 `EvolutionConfig` / 官方配置文档将 `code_embed_sim_threshold` 默认设为 `0.99`。两者属于不同版本与语境；不要将阈值当作有普适依据的最佳参数。
+
+**关键边界：** Embedding 相似不等于语义等价；某些仅修改关键常数/缓存策略的代码可能高度相似但确实改变性能。拒绝器应保存原因、阈值、最近邻 ID、额外生成次数与 Token/费用。建议先做精确哈希去重，后续再考虑 Embedding/LLM Judge 的收益-成本分析。
+
+## 4. Evaluator：调用契约与正确性边界
+
+`wrap_eval.py::run_shinka_eval()` 输入 `program_path`、`experiment_fn_name`、`num_runs`，可额外设置 `get_experiment_kwargs`、`validate_fn`、`aggregate_metrics_fn`、`run_workers`、早停规则等。它运行实验、记录运行时间、验证每轮输出、汇总指标，保存 `metrics.json` 与 `correct.json`。
+
+```json
+{
+  "correct.json": {"correct": true, "error": null},
+  "metrics.json": {"combined_score": 0.72,
+                   "public": {}, "private": {}, "text_feedback": ""}
+}
+```
+
+上述 JSON 是契约教学示例，不是任何真实跑分。注意 `validate_fn` 是**可选**的；框架无法凭空证明语义正确性。`public/private` 区分数据用途，不自动保证模型看不到隐藏测试，更不等于操作系统隔离。对于非 Python 候选程序，官方 `skills/shinka-setup` 说明推荐以外部 subprocess 运行候选，独立的 Python `evaluate.py` 产出正确性与评分 JSON。
+
+对于我们研究，建议把 evaluator 拆成：`patch_apply` → `build` → `correctness` → `quick_perf` → `confirm_perf`。性能分数只应在通过正确性门禁后计算；原始与候选应当使用相同工作负载和可比环境，并保留重复测量的原始数据。不要把任务侧的 `combined_score` 误认为 SWE-Perf 的统计保守收益，也不要把输出 `correct=true` 视为形式化证明。
+
+## 5. 总控制器与评测队列
+
+`shinka/core/__init__.py` 暴露 `ShinkaEvolveRunner`，实现来自 `async_runner.py`。当前控制器将提案产生与评测任务分开管理，相关参数为 `max_proposal_jobs`、`max_evaluation_jobs`、`max_db_workers`；对候选的采样/变异、Embedding、Novelty、提交运行、收集结果、入库和更新 Archive 设有分阶段处理。配置支持本地执行及 Slurm Conda/Docker 作业后端。`ShinkaEvolveRunner` 是源码当前入口，旧文档中的 `EvolutionRunner` 不能直接当作现行 API。
+
+为公平研究，在追踪进化算法效果时要单独记录：`attempted_proposals`、`novelty_rejected`、`submitted_evaluations`、`valid_candidates`、`model_cost`、`test_cost`、`wall_time`。尤其不能只用相同 evaluation 次数宣布端到端成本公平。
+
+## 6. 对我们研究的可复用性判断
+
+**建议先做（需求/审查层）**：统一 Candidate 记录、正确性/性能门禁、基线与候选的配对测量、Patch 不可变归档、运行日志、预算与停止原因。这些也与 SWE-Perf、PerfAgent 研究要求一致。
+
+**建议在可信闭环形成后对照**：独立 Best-of-N、仅从 best 改进、Archive 加权抽样；成本/评测次数双预算对照；重复候选统计。
+
+**暂缓**：多岛迁移、Bandit 多模型、Embedding + LLM 新颖性裁判、复杂异步编排、提示词进化；这些引入额外变量与成本，不应在尚无可信评价器时直接堆进系统。
+
+**科研可验证假设（不是既定创新）**：Profiler 摘要可能改进变异决策；保留部分次优但多样的候选可能有助于跳出局部最优；对高相似代码的门禁可能提高昂贵评测的样本效率。都需要公平对照实验。
+
+## 7. 后续验证与未完成项目
+
+- 本次是源码静态阅读，**没有安装/运行 ShinkaEvolve、没有真实速度提升结果**。
+- 后续如进行工程试验，必须先固定源码 commit SHA、Python/依赖版本及任务配置。
+- 需要 Codex 在实际工程上核对已实现模块及任何 AGENTS.md 指令；本文不能代替对用户工程的审查。
+- 对当前实现的细粒度边界（比如异常失败记录、并发中 Archive 更新的时序）尚未进行动态追踪，需以源码运行证据核实。
+
+## 本轮结论
+
+**最值得学的是候选记录/评价契约与搜索策略解耦，而不是立刻移植一个完整进化系统。** 在我们有可靠的性能评价器之前，更多搜索只会放大测量偏差与 Reward Hacking 风险。

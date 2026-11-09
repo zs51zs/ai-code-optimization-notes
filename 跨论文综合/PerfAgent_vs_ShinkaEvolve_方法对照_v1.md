@@ -53,3 +53,19 @@
 6. **兼容性：** 哪些模块可作为设计参考，不依赖 ShinkaEvolve 代码版本细节？是否能接入现有 Agent 的评测器？
 
 **目前 Codex 的正式优先任务仍是 SWE-Perf + PerfAgent 的现有架构审查。** 在这份审查完成、且 ShinkaEvolve 源码核对后，再决定是否新增进化搜索实现任务。不要将上述问题误解为已获得开发授权。
+
+
+## 第三轮源码核查补充（2026-11-09）
+
+- 最新公开版本已统一 `ShinkaEvolveRunner`，不能把论文或旧版 API 当作最新实现。
+- `programs` 与 `archive` 两表区分持久化历史和当前候选池；只允许正确候选进入当前 archive，`fitness` / `crowding` 负责替换。
+- 当前 `WeightedSamplingStrategy` 相比论文简化式额外采用 MAD 对得分差做尺度归一化。
+- 当前新颖性阈值默认 `0.99`，论文/旧笔记中的 `0.95` 不是当前源码默认值；高相似候选有无 LLM 裁判时行为不同。
+- `run_shinka_eval()` 的正确性 `validate_fn` 可选，因此我们自己的可信正确性、隐藏工作负载和性能复测必须由独立评测器负责。
+- 设计建议：先集成“候选库 + 可信评价”，再设计 Best-of-N、Hill Climbing、Archive Sampling 对照，最后评估 Profiler 证据与种群搜索协同；不要提前开发多岛迁移和模型 Bandit。
+
+源码入口：
+https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/database/dbase.py
+https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/database/parents.py
+https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/core/novelty_judge.py
+https://github.com/SakanaAI/ShinkaEvolve/blob/main/shinka/core/wrap_eval.py
